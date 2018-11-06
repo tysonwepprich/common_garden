@@ -7,6 +7,22 @@ library(readxl)
 library(lme4)
 theme_set(theme_bw(base_size = 20)) 
 
+photoperiod <- function(lat, doy, p = 1.5){
+  theta <- 0.2163108 + 
+    2 * atan(0.9671396 * tan(0.00860 * (doy - 186)))
+  phi <- asin(0.39795 * cos(theta))
+  D <- 24 - (24 / pi) * acos(
+    (sin(p * pi / 180) + sin(lat * pi / 180) * sin(phi))/
+      (cos(lat * pi / 180) * cos(phi))
+  )
+}
+
+
+# from uspest.org 2018 weather data
+gdd <- read.csv("data/gdd2018.txt", row.names=NULL, sep="")
+names(gdd) <- c("month", "day", "tmax", "tmin", "precip", "degdays", "accumdd")
+gdd$date <- lubridate::mdy(paste(gdd$month, gdd$day, 2018, sep = "-"))
+gdd$daylength <- photoperiod(44.5646, lubridate::yday(gdd$date), p = 1.5)
 
 dat <- readxl::read_xlsx("data/CommonGarden_Flowers.xlsx", na = "NA")
 flowermass <- dat %>% 
@@ -72,15 +88,36 @@ diapause <- dat %>%
   mutate(Pool = as.numeric(as.character(Pool)),
          Total = Diapause + Feeder + Repro_female,
          Perc_diap = Diapause / Total,
-         PotID = paste(Population, Pool, sep = "_")) %>% 
-  filter(Total > 0)
+         PotID = paste(Population, Pool, sep = "_"),
+         Date = as.Date(Date)) %>% 
+  filter(Total > 0) %>% 
+  left_join(f1counts) %>% 
+  left_join(controlvars) %>% 
+  left_join(gdd, by = c("Date" = "date")) %>% 
+  mutate(elapsed_degdays = accumdd - StartAccumDD,
+         zF1counts = scale(F1counts),
+         zPlantSize = scale(TotalStemHeight),
+         zAphids = scale(Aphids))
 
-moddiap <- glmer(Perc_diap ~ 1 + (1|Population) + (1|Pool) + (1|PotID), weights = Total, 
+moddiap <- glmer(Perc_diap ~ zF1counts + zPlantSize
+                  + zAphids
+                 + (1 | Population)
+                 + (1|Pool), weights = Total, 
                  family = binomial(link = "logit"), data = diapause)
+summary(moddiap)
 
 popdiap <- ranef(moddiap)$Population
 popdiap$Population <- row.names(popdiap)
 names(popdiap)[1] <- "Diapause"
+
+preddf <- data.frame(zF1counts = 0,
+                            zPlantSize = 0,
+                              zAphids = 0,
+                              Population = c("BL", "BS", "M", "S", "V", "Y"),
+                              Pool = NA)
+preddf$pred <- predict(moddiap, newdata = preddf, re.form = ~(1 | Population), type = "response")
+
+
 
 moddat <- controlvars %>% 
   left_join(flowermass) %>% 
