@@ -117,6 +117,10 @@ preddf <- data.frame(zF1counts = 0,
                               Pool = NA)
 preddf$pred <- predict(moddiap, newdata = preddf, re.form = ~(1 | Population), type = "response")
 
+# can diapause differences be partially explained by temperature?
+diaptemp <- gdd %>% 
+  filter(month == 7, day <= 14) %>% 
+  summarise(meantemp = mean((tmax + tmin)/2))
 
 
 moddat <- controlvars %>% 
@@ -146,6 +150,10 @@ mod <- lmer(logflower ~ Control +
             data = moddat)
 summary(mod)
 
+# alternatively, 
+
+
+
 trtdat <- moddat %>% filter(Population != 'C') %>% filter(Population != "V")
 mod <- lmer(logflower ~ 
               (TotalCounts + HerbivTiming)^2 +
@@ -165,6 +173,13 @@ mod <- lmer(logflower ~
             data = trtdat)
 summary(mod)
 
+# what about quasipoisson?
+mod <- glm(season_total ~ 
+             Population - 1 +
+             TotalCounts * HerbivTiming, 
+           family = quasipoisson(link = "log"),
+           data = trtdat)
+summary(mod)
 
 ggplot(trtdat, aes(x = Diapause, y = HerbivTiming)) +
   geom_point()
