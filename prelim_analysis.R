@@ -5,6 +5,7 @@ library(lubridate)
 library(viridis)
 library(readxl)
 library(lme4)
+library(ggdag)
 theme_set(theme_bw(base_size = 20)) 
 
 photoperiod <- function(lat, doy, p = 1.5){
@@ -100,7 +101,7 @@ diapause <- dat %>%
          zAphids = scale(Aphids))
 
 moddiap <- glmer(Perc_diap ~ zF1counts + zPlantSize
-                  + zAphids
+                 + zAphids
                  + (1 | Population)
                  + (1|Pool), weights = Total, 
                  family = binomial(link = "logit"), data = diapause)
@@ -111,11 +112,54 @@ popdiap$Population <- row.names(popdiap)
 names(popdiap)[1] <- "Diapause"
 
 preddf <- data.frame(zF1counts = 0,
-                            zPlantSize = 0,
-                              zAphids = 0,
-                              Population = c("BL", "BS", "M", "S", "V", "Y"),
-                              Pool = NA)
+                     zPlantSize = 0,
+                     zAphids = 0,
+                     Population = c("BL", "BS", "M", "S", "V", "Y"),
+                     Pool = NA)
 preddf$pred <- predict(moddiap, newdata = preddf, re.form = ~(1 | Population), type = "response")
+
+# F2 diapause proportion for each population
+dat <- readxl::read_xlsx("data/CommonGarden_F2_Diapause.xlsx", na = "NA")
+diapause <- dat %>% 
+  filter(Pool != "ALL") %>% 
+  mutate(Pool = as.numeric(as.character(Pool)),
+         Total = Diapause + Feeder + Repro_female,
+         Perc_diap = Diapause / Total,
+         PotID = paste(Population, Pool, sep = "_"),
+         Date = as.Date(Date_test)) %>% 
+  filter(Total > 0) %>% 
+  left_join(removal) %>% 
+  left_join(controlvars) %>% 
+  left_join(gdd, by = c("Date" = "date")) %>% 
+  mutate(elapsed_degdays = accumdd - StartAccumDD,
+         zF2counts = scale(F2counts),
+         zPlantSize = scale(TotalStemHeight),
+         zAphids = scale(Aphids),
+         zSenesc = scale(Senescence))
+
+
+moddiap <- glmer(Perc_diap ~ log(F2counts + 1) 
+                 # + zPlantSize
+                 # + zSenesc
+                 + (1 | Population)
+                 + (1|Pool), weights = Total, 
+                 family = binomial(link = "logit"), data = diapause)
+summary(moddiap)
+
+popdiap <- ranef(moddiap)$Population
+popdiap$Population <- row.names(popdiap)
+names(popdiap)[1] <- "Diapause"
+
+preddf <- data.frame(zF2counts = 0,
+                     zPlantSize = 0,
+                     zAphids = 0,
+                     Population = c("BL", "BS", "M", "S", "V", "Y"),
+                     Pool = NA)
+preddf$pred <- predict(moddiap, newdata = preddf, re.form = ~(1 | Population), type = "response")
+
+boxplt <- ggplot(diapause, aes(x = Population, y = Perc_diap)) +
+  geom_boxplot()
+boxplt
 
 # can diapause differences be partially explained by temperature?
 diaptemp <- gdd %>% 
@@ -141,6 +185,60 @@ moddat$season_total[is.na(moddat$season_total)] <- 0
 moddat$Control <- ifelse(moddat$Population == "C", "yes", "no")
 moddat$logflower <- log(moddat$season_total + 1)
 
+pairs(moddat[, c("season_total", "zF1", "zF2", "Aphids", "Senescence", "Regrowth")])
+
+
+cg_dag <- dagify(Fitness ~ Flowers + Roots,
+                 Roots ~ Herbivory + PlantSize,
+                 Flowers ~ Herbivory + PlantSize,
+                 Herbivory ~ Aphids + F1 + F2,
+                 Aphids ~~ F1,
+                 F1 ~ Population + PlantSize,
+                 F2 ~ F1 + Diapause,
+                 Diapause ~ Population + F1 + Aphids + PlantSize,
+                 labels = c("Herbivory" = "Herbivory",
+                            "PlantSize" = "Plant Size",
+                            "Aphids" = "Aphids",
+                            "Beetles" = "Beetles",
+                            "F1" = "F1",
+                            "F2" = "F2",
+                            "Population" = "Beetle\nPopulation",
+                            "Diapause" = "Diapause",
+                            "Fitness" = "Fitness",
+                            "Reproduction" = "Reproduction",
+                            "Roots" = "Roots",
+                            "Flowers" = "Reproduction"),
+                 # latent = "unhealthy",
+                 # exposure = "smoking",
+                 outcome = "Fitness")
+
+ggdag(cg_dag, text = FALSE, use_labels = "label")
+
+cg_dag <- dagify(Fitness ~ Herbivory,
+                    Herbivory ~ F1 + F2,
+                    F2 ~ F1 + Diapause,
+                 F1 ~ Population,
+                    Diapause ~ Population,
+                    labels = c("Herbivory" = "Herbivory",
+                               "PlantSize" = "Plant Size",
+                               "Aphids" = "Aphids",
+                               "Beetles" = "Beetles",
+                               "F1" = "F1",
+                               "F2" = "F2",
+                               "Population" = "Beetle\nPopulation",
+                               "Diapause" = "Diapause",
+                               "Fitness" = "Plant\nFitness",
+                               "Reproduction" = "Reproduction",
+                               "Roots" = "Roots",
+                               "Flowers" = "Reproduction"),
+                    # latent = "unhealthy",
+                    # exposure = "smoking",
+                    outcome = "Fitness")
+
+ggdag_classic(cg_dag, text_label = "label")+ theme_dag_blank()
+
+
+
 # control have more flowers
 mod <- lmer(logflower ~ Control + 
               TotalStemHeight +
@@ -163,7 +261,7 @@ mod <- lmer(logflower ~
 summary(mod)
 mod <- lmer(logflower ~ 
               (zF1 + zF2)^2 +
-               (1|Population), 
+              (1|Population), 
             # family = poisson(link = "log"), 
             data = trtdat)
 mod <- lmer(logflower ~ 
